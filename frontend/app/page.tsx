@@ -1,0 +1,148 @@
+'use client'
+import { useEffect, useRef, useState } from 'react'
+
+export default function Home() {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const [repo, setRepo] = useState('')
+  const [status, setStatus] = useState('')
+  const [previewUrl, setPreviewUrl] = useState('')
+
+  useEffect(() => {
+    const canvas = canvasRef.current!
+    const ctx = canvas.getContext('2d')!
+    let animId: number
+    canvas.width = window.innerWidth
+    canvas.height = window.innerHeight
+
+    const particles = Array.from({length:120}, () => ({
+      x: Math.random()*canvas.width, y: Math.random()*canvas.height,
+      size: Math.random()*1.5+0.3, sx: (Math.random()-.5)*.4, sy: (Math.random()-.5)*.4,
+      alpha: Math.random()*.6+.1, pulse: Math.random()*Math.PI*2
+    }))
+
+    function loop() {
+      ctx.fillStyle = 'rgba(2,12,8,0.15)'
+      ctx.fillRect(0,0,canvas.width,canvas.height)
+      particles.forEach(p => {
+        p.x+=p.sx; p.y+=p.sy; p.pulse+=.02
+        if(p.x<0||p.x>canvas.width||p.y<0||p.y>canvas.height){
+          p.x=Math.random()*canvas.width; p.y=Math.random()*canvas.height
+        }
+        ctx.beginPath()
+        ctx.arc(p.x,p.y,p.size,0,Math.PI*2)
+        ctx.fillStyle=`rgba(0,255,136,${p.alpha*(0.6+0.4*Math.sin(p.pulse))})`
+        ctx.fill()
+      })
+      animId = requestAnimationFrame(loop)
+    }
+    loop()
+    return () => cancelAnimationFrame(animId)
+  }, [])
+
+  function pollStatus(id: string) {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`http://localhost:4000/api/status?id=${id}`)
+        const data = await res.json()
+        if (data.status === 'ready') {
+          clearInterval(interval)
+          setStatus('✓ preview ready')
+          setPreviewUrl(data.url)
+        } else {
+          setStatus('> building... please wait')
+        }
+      } catch {
+        clearInterval(interval)
+        setStatus('> error checking status')
+      }
+    }, 2000)
+  }
+
+  async function forge() {
+    if (!repo) { setStatus('> enter a github url first'); return }
+    setPreviewUrl('')
+    setStatus('> connecting to forge engine...')
+    try {
+      const res = await fetch('http://localhost:4000/api/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoUrl: repo })
+      })
+      const data = await res.json()
+      setStatus(`> cloning started [id: ${data.id}]`)
+      pollStatus(data.id)
+    } catch {
+      setStatus('> error: could not reach backend')
+    }
+  }
+
+  return (
+    <main className="relative min-h-screen bg-[#020c08] flex flex-col items-center justify-start overflow-x-hidden">
+      <canvas ref={canvasRef} className="fixed inset-0 w-full h-full" />
+
+      <div className="relative z-10 flex flex-col items-center gap-4 pt-16 w-full px-4">
+        <span className="border border-[#00ff8844] text-[#00ff8888] text-xs px-4 py-1 rounded-full tracking-widest font-mono">
+          PREVIEW · FORGE · ENGINE
+        </span>
+        <h1
+          style={{fontFamily:'cursive', textShadow:'0 0 20px #00ff88, 0 0 60px #009944'}}
+          className="text-6xl text-[#00ff88]">
+          PreviewForge
+        </h1>
+        <p style={{fontFamily:'cursive'}} className="text-[#39ff99] text-xl">
+          paste a repo. get a live preview. instantly.
+        </p>
+        <input
+          value={repo}
+          onChange={e => setRepo(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && forge()}
+          className="w-96 px-4 py-3 bg-[#020c08] border border-[#00ff88] text-[#00ff88] font-mono text-sm rounded focus:outline-none placeholder-[#1a6640]"
+          placeholder="https://github.com/user/repo"
+        />
+        <button
+          onClick={forge}
+          className="w-96 py-3 border border-[#00ff88] text-[#00ff88] font-mono tracking-widest hover:bg-[#00ff88] hover:text-[#020c08] transition-all rounded">
+          ⚡ GENERATE PREVIEW
+        </button>
+        <p className="font-mono text-sm text-[#00ff88] h-5" style={{textShadow:'0 0 6px #00ff88'}}>
+          {status}
+        </p>
+
+        {previewUrl && (
+          <div className="flex flex-col items-center gap-2 w-full mt-2 pb-16">
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-xs text-[#00ff8888] tracking-widest">LIVE PREVIEW</span>
+              <a
+                href={previewUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-xs text-[#00ff88] underline hover:text-[#00cc66]">
+                {previewUrl} ↗
+              </a>
+            </div>
+            <div
+              className="rounded overflow-hidden"
+              style={{
+                width: '90vw',
+                maxWidth: '1100px',
+                height: '600px',
+                border: '1px solid #00ff8844',
+                boxShadow: '0 0 30px #00ff8822'
+              }}>
+              <div className="flex items-center gap-2 px-3 py-2 border-b border-[#00ff8822] bg-[#020c08]">
+                <div className="w-2 h-2 rounded-full bg-[#00ff88]" />
+                <span className="font-mono text-xs text-[#00ff8866]">{previewUrl}</span>
+              </div>
+              <iframe
+                src={previewUrl}
+                width="100%"
+                height="100%"
+                style={{border:'none', background:'#fff'}}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    </main>
+  )
+}
