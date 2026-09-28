@@ -83,7 +83,7 @@ func previewHandler(w http.ResponseWriter, r *http.Request) {
 		// NOTE:
 		// This executes git against a user-provided URL.
 		// For production, validate URLs and sandbox the build process.
-		cmd := exec.Command("git", "clone", req.RepoURL, cloneDir)
+		cmd := exec.Command("git", "-c", "credential.helper=", "clone", req.RepoURL, cloneDir)
 
 		out, err := cmd.CombinedOutput()
 		if err != nil {
