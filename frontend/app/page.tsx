@@ -48,6 +48,9 @@ export default function Home() {
           clearInterval(interval)
           setStatus('✓ preview ready')
           setPreviewUrl(data.url)
+        } else if (data.status === 'failed') {
+          clearInterval(interval)
+          setStatus(`> preview failed: ${data.message ?? 'unknown error'}`)
         } else {
           setStatus('> building... please wait')
         }
