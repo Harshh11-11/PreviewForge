@@ -1,11 +1,12 @@
 package main
 
 import (
-	"fmt"
-	"log"
-	"net"
-	"os/exec"
-	"time"
+    "fmt"
+    "log"
+    "net"
+    "os"
+    "os/exec"
+    "time"
 )
 
 func buildAndRun(id string, cloneDir string, stack string) (int, error) {
@@ -46,21 +47,18 @@ func buildAndRun(id string, cloneDir string, stack string) (int, error) {
 	}
 
 	// Wait until port is actually open
-	for i := 0; i < 30; i++ {
-		conn, err := net.DialTimeout(
-			"localhost:"+fmt.Sprintf("%d", port),
-			time.Second,
-		)
+for i := 0; i < 30; i++ {
+    conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), time.Second)
 
-		if err == nil {
-			conn.Close()
-			log.Println("Server is up!")
-			return port, nil
-		}
+    if err == nil {
+        conn.Close()
+        log.Println("Server is up!")
+        return port, nil
+    }
 
-		log.Println("Waiting...", i+1)
-		time.Sleep(2 * time.Second)
-	}
+    log.Println("Waiting...", i+1)
+    time.Sleep(2 * time.Second)
+}
 
 	return 0, fmt.Errorf("server never started on port %d", port)
 }
