@@ -25,15 +25,13 @@ func buildAndRun(id string, cloneDir string, stack string) (int, error) {
 	log.Println("Starting Vite on port:", port)
 
 	run := exec.Command(
-		"npm",
-		"run",
-		"dev",
-		"--",
-		"--port",
-		fmt.Sprintf("%d", port),
-		"--host",
-		"0.0.0.0",
-	)
+    "npx",
+    "vite",
+    "--port",
+    fmt.Sprintf("%d", port),
+    "--host",
+    "0.0.0.0",
+)
 
 	run.Dir = cloneDir
 
