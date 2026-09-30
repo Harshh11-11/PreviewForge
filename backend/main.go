@@ -374,7 +374,7 @@ func previewProxyHandler(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-var rootRelativeURL = regexp.MustCompile(`(["'=(])/(?!/)`)
+var rootRelativeURL = regexp.MustCompile(`(["'=(])(/+)`)
 
 func rewritePreviewBody(body io.ReadCloser, id string) io.ReadCloser {
 	data, err := io.ReadAll(body)
@@ -382,8 +382,15 @@ func rewritePreviewBody(body io.ReadCloser, id string) io.ReadCloser {
 	if err != nil {
 		return io.NopCloser(strings.NewReader(""))
 	}
-	prefix := "$1/preview/" + id + "/"
-	return io.NopCloser(strings.NewReader(rootRelativeURL.ReplaceAllString(string(data), prefix)))
+	prefix := "/preview/" + id + "/"
+	rewritten := rootRelativeURL.ReplaceAllStringFunc(string(data), func(match string) string {
+		// Preserve protocol-relative URLs such as //cdn.example.com.
+		if strings.Count(match, "/") > 1 {
+			return match
+		}
+		return match[:1] + prefix
+	})
+	return io.NopCloser(strings.NewReader(rewritten))
 }
 
 func setPreviewJob(id string, job previewJob) {
