@@ -234,7 +234,7 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go func() {
-		time.Sleep(1 * time.Minute)
+		time.Sleep(30 * time.Minute)
 
 		cloneDir := filepath.Join(
 			os.TempDir(),
