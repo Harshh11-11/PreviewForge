@@ -9,8 +9,9 @@ export default function Home() {
   const [status, setStatus] = useState('')
   const [previewUrl, setPreviewUrl] = useState('')
 
-  // Render backend URL comes from Vercel environment variables
-  const API_URL = process.env.NEXT_PUBLIC_API_URL
+  // Use the local backend by default; deployments can override this in their
+  // NEXT_PUBLIC_API_URL environment variable.
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000'
 
   useEffect(() => {
     const canvas = canvasRef.current
