@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -199,7 +201,18 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 	baseURL := os.Getenv("PUBLIC_BASE_URL")
 
 	if baseURL == "" {
-		baseURL = "https://previewforge-backend.onrender.com"
+		proto := r.Header.Get("X-Forwarded-Proto")
+		if proto == "" {
+			proto = "http"
+			if r.TLS != nil {
+				proto = "https"
+			}
+		}
+		host := r.Header.Get("X-Forwarded-Host")
+		if host == "" {
+			host = r.Host
+		}
+		baseURL = proto + "://" + host
 	}
 
 	baseURL = strings.TrimRight(baseURL, "/")
@@ -308,6 +321,7 @@ func previewProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
+		req.Header.Set("Accept-Encoding", "identity")
 
 		// Remove /preview/{id} from the path
 		// before forwarding to Vite.
@@ -323,12 +337,18 @@ func previewProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		contentType := resp.Header.Get("Content-Type")
-
-		if strings.Contains(contentType, "text/html") {
+		if strings.Contains(contentType, "text/html") || strings.Contains(contentType, "javascript") || strings.Contains(contentType, "css") {
+			// The project is mounted below /preview/{id}, while most dev servers
+			// emit root-relative asset URLs. Keep those requests inside this proxy.
+			resp.Header.Set("Content-Encoding", "identity")
 			resp.Header.Set(
 				"Cache-Control",
 				"no-store",
 			)
+			resp.Body = rewritePreviewBody(resp.Body, id)
+			resp.ContentLength = -1
+			resp.Header.Del("Content-Length")
+			resp.Header.Del("ETag")
 		}
 
 		return nil
@@ -352,6 +372,18 @@ func previewProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy.ServeHTTP(w, r)
+}
+
+var rootRelativeURL = regexp.MustCompile(`(["'=(])/(?!/)`)
+
+func rewritePreviewBody(body io.ReadCloser, id string) io.ReadCloser {
+	data, err := io.ReadAll(body)
+	body.Close()
+	if err != nil {
+		return io.NopCloser(strings.NewReader(""))
+	}
+	prefix := "$1/preview/" + id + "/"
+	return io.NopCloser(strings.NewReader(rootRelativeURL.ReplaceAllString(string(data), prefix)))
 }
 
 func setPreviewJob(id string, job previewJob) {
