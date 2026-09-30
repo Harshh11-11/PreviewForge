@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,14 +64,21 @@ func previewHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := generateID()
+
 	previewsMu.Lock()
-	previews[id] = previewJob{status: "cloning"}
+	previews[id] = previewJob{
+		status: "cloning",
+	}
 	previewsMu.Unlock()
 
 	cloneDir := filepath.Join(os.TempDir(), "forge", id)
 
 	if err := os.MkdirAll(cloneDir, 0o755); err != nil {
-		setPreviewJob(id, previewJob{status: "failed", message: "Failed to prepare workspace"})
+		setPreviewJob(id, previewJob{
+			status:  "failed",
+			message: "Failed to prepare workspace",
+		})
+
 		http.Error(
 			w,
 			"Failed to prepare workspace",
@@ -80,15 +90,25 @@ func previewHandler(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		log.Println("Cloning:", req.RepoURL)
 
-		// NOTE:
-		// This executes git against a user-provided URL.
-		// For production, validate URLs and sandbox the build process.
-		cmd := exec.Command("git", "-c", "credential.helper=", "clone", req.RepoURL, cloneDir)
+		cmd := exec.Command(
+			"git",
+			"-c",
+			"credential.helper=",
+			"clone",
+			req.RepoURL,
+			cloneDir,
+		)
 
 		out, err := cmd.CombinedOutput()
+
 		if err != nil {
 			log.Println("Clone failed:", string(out))
-			setPreviewJob(id, previewJob{status: "failed", message: "Repository clone failed"})
+
+			setPreviewJob(id, previewJob{
+				status:  "failed",
+				message: "Repository clone failed",
+			})
+
 			os.RemoveAll(cloneDir)
 			return
 		}
@@ -96,20 +116,32 @@ func previewHandler(w http.ResponseWriter, r *http.Request) {
 		stack := detectStack(cloneDir)
 
 		log.Println("Detected stack:", stack)
-		setPreviewJob(id, previewJob{status: "building"})
+
+		setPreviewJob(id, previewJob{
+			status: "building",
+		})
 
 		port, err := buildAndRun(id, cloneDir, stack)
+
 		if err != nil {
 			log.Println("Build error:", err)
-			setPreviewJob(id, previewJob{status: "failed", message: "Preview build failed"})
+
+			setPreviewJob(id, previewJob{
+				status:  "failed",
+				message: "Preview build failed",
+			})
+
 			os.RemoveAll(cloneDir)
 			return
 		}
 
-		setPreviewJob(id, previewJob{status: "ready", port: port})
+		setPreviewJob(id, previewJob{
+			status: "ready",
+			port:   port,
+		})
 
 		log.Printf(
-			"Preview ready: http://localhost:%d\n",
+			"Preview ready on port %d",
 			port,
 		)
 	}()
@@ -139,49 +171,68 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"status": "unknown"})
+
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "unknown",
+		})
+
 		return
 	}
+
 	if job.status == "failed" {
 		json.NewEncoder(w).Encode(map[string]string{
 			"status":  "failed",
 			"message": job.message,
 		})
+
 		return
 	}
+
 	if job.status != "ready" {
 		json.NewEncoder(w).Encode(map[string]string{
 			"status": job.status,
 		})
+
 		return
 	}
 
-	// IMPORTANT:
-	// This localhost URL works only when the browser and preview
-	// are running on the same machine.
-	//
-	// For Render production deployment, this needs to be replaced
-	// by a publicly accessible preview URL/proxy.
-	previewURL := fmt.Sprintf("http://localhost:%d", job.port)
+	baseURL := os.Getenv("PUBLIC_BASE_URL")
+
+	if baseURL == "" {
+		baseURL = "https://previewforge-backend.onrender.com"
+	}
+
+	baseURL = strings.TrimRight(baseURL, "/")
+
+	previewURL := fmt.Sprintf(
+		"%s/preview/%s/",
+		baseURL,
+		id,
+	)
 
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "ready",
 		"url":    previewURL,
 	})
 
-	// Claim cleanup under the lock so frequent status polls schedule it once.
+	// Schedule cleanup only once.
 	previewsMu.Lock()
+
 	current := previews[id]
+
 	scheduleCleanup := !current.cleanupScheduled
+
 	if scheduleCleanup {
 		current.cleanupScheduled = true
 		previews[id] = current
 	}
+
 	previewsMu.Unlock()
+
 	if !scheduleCleanup {
 		return
 	}
-	// Keep the preview available briefly after it first becomes ready.
+
 	go func() {
 		time.Sleep(1 * time.Minute)
 
@@ -201,6 +252,106 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 		delete(previews, id)
 		previewsMu.Unlock()
 	}()
+}
+
+func previewProxyHandler(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(
+		r.URL.Path,
+		"/preview/",
+	)
+
+	parts := strings.SplitN(path, "/", 2)
+
+	id := parts[0]
+
+	if id == "" {
+		http.Error(
+			w,
+			"preview id is required",
+			http.StatusBadRequest,
+		)
+		return
+	}
+
+	previewsMu.RLock()
+	job, ok := previews[id]
+	previewsMu.RUnlock()
+
+	if !ok || job.status != "ready" {
+		http.Error(
+			w,
+			"preview not found or not ready",
+			http.StatusNotFound,
+		)
+		return
+	}
+
+	target, err := url.Parse(
+		fmt.Sprintf(
+			"http://127.0.0.1:%d",
+			job.port,
+		),
+	)
+
+	if err != nil {
+		http.Error(
+			w,
+			"invalid preview target",
+			http.StatusInternalServerError,
+		)
+		return
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(target)
+
+	originalDirector := proxy.Director
+
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+
+		// Remove /preview/{id} from the path
+		// before forwarding to Vite.
+
+		req.URL.Path = "/"
+
+		if len(parts) == 2 && parts[1] != "" {
+			req.URL.Path = "/" + parts[1]
+		}
+
+		req.Host = target.Host
+	}
+
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		contentType := resp.Header.Get("Content-Type")
+
+		if strings.Contains(contentType, "text/html") {
+			resp.Header.Set(
+				"Cache-Control",
+				"no-store",
+			)
+		}
+
+		return nil
+	}
+
+	proxy.ErrorHandler = func(
+		w http.ResponseWriter,
+		r *http.Request,
+		err error,
+	) {
+		log.Println(
+			"Preview proxy error:",
+			err,
+		)
+
+		http.Error(
+			w,
+			"Preview server unavailable",
+			http.StatusBadGateway,
+		)
+	}
+
+	proxy.ServeHTTP(w, r)
 }
 
 func setPreviewJob(id string, job previewJob) {
@@ -245,7 +396,10 @@ func generateID() string {
 	var b [4]byte
 
 	if _, err := rand.Read(b[:]); err != nil {
-		return fmt.Sprintf("%08x", []byte("forge")[:4])
+		return fmt.Sprintf(
+			"%08x",
+			[]byte("forge")[:4],
+		)
 	}
 
 	return fmt.Sprintf(
@@ -260,35 +414,53 @@ func generateID() string {
 func main() {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/api/preview", previewHandler)
-	mux.HandleFunc("/api/status", statusHandler)
+	mux.HandleFunc(
+		"/api/preview",
+		previewHandler,
+	)
+
+	mux.HandleFunc(
+		"/api/status",
+		statusHandler,
+	)
+
+	mux.HandleFunc(
+		"/preview/",
+		previewProxyHandler,
+	)
 
 	handler := cors.New(cors.Options{
 		AllowedOrigins: []string{
 			"http://localhost:3000",
 			"https://preview-forge.vercel.app",
 		},
+
 		AllowedMethods: []string{
 			"POST",
 			"GET",
 			"OPTIONS",
 		},
+
 		AllowedHeaders: []string{
 			"Content-Type",
 		},
 	}).Handler(mux)
 
-	// Render provides the PORT environment variable.
-	// Locally, fall back to port 4000.
 	port := os.Getenv("PORT")
 
 	if port == "" {
 		port = "4000"
 	}
 
-	log.Printf("Backend running on :%s", port)
+	log.Printf(
+		"Backend running on :%s",
+		port,
+	)
 
 	log.Fatal(
-		http.ListenAndServe(":"+port, handler),
+		http.ListenAndServe(
+			":"+port,
+			handler,
+		),
 	)
 }
