@@ -87,10 +87,10 @@ export default function Home() {
   }, [])
 
   function pollStatus(id: string) {
-    const interval = setInterval(async () => {
+    let retries = 0
+    const poll = async () => {
       try {
         if (!API_URL) {
-          clearInterval(interval)
           setStatus('> API URL is not configured')
           return
         }
@@ -105,29 +105,30 @@ export default function Home() {
 
         const data = await res.json()
 
-        console.log('Status:', data)
-
         if (data.status === 'ready') {
-          clearInterval(interval)
-
           setStatus('✓ preview ready')
           setPreviewUrl(data.url)
         } else if (data.status === 'failed') {
-          clearInterval(interval)
-
           setStatus(
             `> preview failed: ${data.message ?? 'unknown error'}`
           )
         } else {
           setStatus('> building... please wait')
+          window.setTimeout(poll, 1000)
         }
       } catch (error) {
         console.error('Status error:', error)
 
-        clearInterval(interval)
-        setStatus('> error checking status')
+        retries += 1
+        if (retries < 30) {
+          setStatus('> reconnecting to preview engine...')
+          window.setTimeout(poll, 1500)
+        } else {
+          setStatus('> error checking status; try generating again')
+        }
       }
-    }, 2000)
+    }
+    void poll()
   }
 
   async function forge() {
@@ -287,13 +288,15 @@ export default function Home() {
               </div>
 
               <iframe
+                key={previewUrl}
                 src={previewUrl}
                 title="Live Preview"
                 width="100%"
-                height="100%"
+                height="calc(100% - 37px)"
                 style={{
+                  display: 'block',
                   border: 'none',
-                  background: '#fff',
+                  background: '#020c08',
                 }}
               />
             </div>

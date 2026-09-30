@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,7 +22,11 @@ func buildAndRun(id string, cloneDir string, stack string) (int, error) {
 
 	log.Println("Installing dependencies...")
 
-	install := exec.Command("npm", "install")
+	installArgs := []string{"install", "--no-audit", "--no-fund"}
+	if _, err := os.Stat(filepath.Join(cloneDir, "package-lock.json")); err == nil {
+		installArgs = []string{"ci", "--no-audit", "--no-fund"}
+	}
+	install := exec.Command("npm", installArgs...)
 	install.Dir = cloneDir
 
 	out, err := install.CombinedOutput()
@@ -43,18 +48,20 @@ func buildAndRun(id string, cloneDir string, stack string) (int, error) {
 		return 0, fmt.Errorf("start failed: %s", err)
 	}
 
-	// Wait until port is actually open
-	for i := 0; i < 30; i++ {
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
-
+	// A listening socket can still return a blank/error page while the app compiles.
+	// Wait for an actual HTTP response before exposing the preview to the iframe.
+	client := &http.Client{Timeout: 2 * time.Second}
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
 		if err == nil {
-			conn.Close()
-			log.Println("Server is up!")
-			return port, nil
+			resp.Body.Close()
+			if resp.StatusCode < http.StatusInternalServerError {
+				log.Println("Preview is responding over HTTP")
+				return port, nil
+			}
 		}
-
-		log.Println("Waiting...", i+1)
-		time.Sleep(2 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	return 0, fmt.Errorf("server never started on port %d", port)
